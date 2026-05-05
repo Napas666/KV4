@@ -113,7 +113,28 @@ def esp_loop():
     time.sleep(1)
     try: SW=win32api.GetSystemMetrics(0); SH=win32api.GetSystemMetrics(1)
     except: SW,SH=1920,1080
-    os.environ['SDL_VIDEO_WINDOW_POS']="0,0"
+    # Найти окно CS по PID
+    cs_hwnd = 0
+    for _ in range(20):
+        def _cb(h,_):
+            nonlocal cs_hwnd
+            if not win32gui.IsWindowVisible(h): return
+            _,pid=win32process.GetWindowThreadProcessId(h)
+            if pid==pm.process_id:
+                rc=win32gui.GetWindowRect(h)
+                if rc[2]-rc[0]>300: cs_hwnd=h
+        import win32process
+        win32gui.EnumWindows(_cb,None)
+        if cs_hwnd: break
+        time.sleep(1)
+
+    if cs_hwnd:
+        rc=win32gui.GetWindowRect(cs_hwnd)
+        OX,OY=rc[0],rc[1]; SW=rc[2]-rc[0]; SH=rc[3]-rc[1]
+    else:
+        OX,OY=0,0
+
+    os.environ['SDL_VIDEO_WINDOW_POS']=f"{OX},{OY}"
     screen=pygame.display.set_mode((SW,SH),pygame.NOFRAME)
     pygame.display.set_caption("__ov__")
     hwnd=pygame.display.get_wm_info()['window']
@@ -123,7 +144,7 @@ def esp_loop():
         win32con.WS_EX_TOPMOST|win32con.WS_EX_NOACTIVATE)
     TRANS=(255,0,255)
     win32gui.SetLayeredWindowAttributes(hwnd,win32api.RGB(*TRANS),0,win32con.LWA_COLORKEY)
-    win32gui.SetWindowPos(hwnd,win32con.HWND_TOPMOST,0,0,SW,SH,
+    win32gui.SetWindowPos(hwnd,win32con.HWND_TOPMOST,OX,OY,SW,SH,
         win32con.SWP_NOACTIVATE|win32con.SWP_SHOWWINDOW)
     fnt=pygame.font.SysFont("Arial",12,bold=True)
     clk=pygame.time.Clock()
@@ -247,8 +268,19 @@ threading.Thread(target=auto_loop,daemon=True).start()
 def aim_tick():
     if not (S['aim'] and ok): return
     try:
-        import win32api
+        import win32api, win32process
         SW=win32api.GetSystemMetrics(0); SH=win32api.GetSystemMetrics(1)
+        # Получаем реальный размер окна CS
+        def _cb2(h,_):
+            global _cs_w, _cs_h
+            if not win32gui.IsWindowVisible(h): return
+            _,pid=win32process.GetWindowThreadProcessId(h)
+            if pid==pm.process_id:
+                rc=win32gui.GetWindowRect(h)
+                if rc[2]-rc[0]>300: _cs_w,_cs_h=rc[2]-rc[0],rc[3]-rc[1]
+        _cs_w,_cs_h=SW,SH
+        win32gui.EnumWindows(_cb2,None)
+        SW,SH=_cs_w,_cs_h
         ca=get_angles(); mp=ent_pos(1); mn=ent_name(1)
         cx,cy=SW//2,SH//2
         best_dx=best_dy=None; best_d=float('inf')
