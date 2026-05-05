@@ -6,11 +6,11 @@ VIEWANGLES = 0x1230274
 ELIST      = 0x12043C8
 ESIZE      = 0x250
 ENAME      = 0x104
-EPOS       = 0x184
 ON_GROUND  = 0x122E2D4
 FORCE_JUMP = 0x131434
 
 pm = None; hw = cl = 0; ok = False
+EPOS = 0x184  # сканируется автоматически
 
 def attach():
     global pm, hw, cl, ok
@@ -36,37 +36,28 @@ def rstr(a):
     try: return pm.read_bytes(a,44).split(b'\x00')[0].decode('utf-8','ignore').strip()
     except: return ""
 
-def get_angles():  return rv3(hw+VIEWANGLES)
-def is_ground():   return ri(hw+ON_GROUND)==1
-def ent_b(i):      return hw+ELIST+i*ESIZE
-def ent_name(i):   return rstr(ent_b(i)+ENAME)
-def ent_pos(i):    return rv3(ent_b(i)+EPOS)
+def get_angles(): return rv3(hw+VIEWANGLES)
+def ent_b(i):    return hw+ELIST+i*ESIZE
+def ent_name(i): return rstr(ent_b(i)+ENAME)
+def ent_pos(i):  return rv3(ent_b(i)+EPOS)
+def is_ground():  return ri(hw+ON_GROUND)==1
 
-def valid_pos(p):
-    return (all(-16000<v<16000 for v in p) and
-            any(abs(v)>1 for v in p) and
-            -300<p[2]<500)
-
-def find_my_pos():
-    for i in range(3):
-        p=ent_pos(i)
-        if valid_pos(p): return p,i
-    return (0.,0.,36.),1
-
-def get_bots(mi,mn):
-    out=[]
-    for i in range(33):
-        if i==mi: continue
-        n=ent_name(i)
-        if not n or n==mn: continue
-        p=ent_pos(i)
-        if valid_pos(p): out.append((i,n,p))
-    return out
-
-def norm(a):
-    while a>180: a-=360
-    while a<-180: a+=360
-    return a
+def auto_scan_epos():
+    """Сканирует entity 1-4 и ищет offset где z разумный (0-200)."""
+    global EPOS
+    for off in range(0x100, 0x220, 4):
+        votes = 0
+        for eidx in range(1, 5):
+            try:
+                x,y,z = struct.unpack('fff', pm.read_bytes(ent_b(eidx)+off, 12))
+                if (-8000<x<8000 and -8000<y<8000 and
+                    -100<z<300 and (abs(x)>1 or abs(y)>1)):
+                    votes += 1
+            except: pass
+        if votes >= 2:
+            EPOS = off
+            return off
+    return None
 
 def move_mouse(dx,dy):
     try:
@@ -90,7 +81,7 @@ def w2s(rel,ang,sw,sh):
 
 S={'aim':False,'bhop':False,'esp':False}
 CFG={'strength':8.,'head':True}
-DBG={'pos':'--','aim':'--','bots':0}
+DBG={'pos':'--','aim':'--','epos':'0x184','scan':'не сканировано'}
 
 def bhop_loop():
     air=False
@@ -104,13 +95,16 @@ def bhop_loop():
         time.sleep(0.005)
 threading.Thread(target=bhop_loop,daemon=True).start()
 
+# ── ESP pygame ────────────────────────────────────────────
+ESP_DRAW = []  # список что рисовать: [('box',x1,y1,x2,y2), ('line',...)]
+
 def esp_loop():
     try:
         import pygame,win32gui,win32con,win32api
     except: return
     pygame.init(); pygame.font.init()
     while not ok: time.sleep(0.5)
-    time.sleep(0.5)
+    time.sleep(1)
     try: SW=win32api.GetSystemMetrics(0); SH=win32api.GetSystemMetrics(1)
     except: SW,SH=1920,1080
     os.environ['SDL_VIDEO_WINDOW_POS']="0,0"
@@ -119,40 +113,58 @@ def esp_loop():
     hwnd=pygame.display.get_wm_info()['window']
     ex=win32gui.GetWindowLong(hwnd,win32con.GWL_EXSTYLE)
     win32gui.SetWindowLong(hwnd,win32con.GWL_EXSTYLE,
-        ex|win32con.WS_EX_LAYERED|win32con.WS_EX_TRANSPARENT|win32con.WS_EX_TOPMOST)
+        ex|win32con.WS_EX_LAYERED|win32con.WS_EX_TRANSPARENT|
+        win32con.WS_EX_TOPMOST|win32con.WS_EX_NOACTIVATE)
     TRANS=(255,0,255)
     win32gui.SetLayeredWindowAttributes(hwnd,win32api.RGB(*TRANS),0,win32con.LWA_COLORKEY)
-    win32gui.SetWindowPos(hwnd,win32con.HWND_TOPMOST,0,0,SW,SH,win32con.SWP_NOACTIVATE)
-    fnt=pygame.font.SysFont("Arial",11,bold=True)
+    win32gui.SetWindowPos(hwnd,win32con.HWND_TOPMOST,0,0,SW,SH,
+        win32con.SWP_NOACTIVATE|win32con.SWP_SHOWWINDOW)
+    fnt=pygame.font.SysFont("Arial",12,bold=True)
     clk=pygame.time.Clock()
-    RED=(255,60,60); PURP=(140,60,255); YEL=(255,220,0)
+    TRANS_C=(255,0,255); RED=(255,60,60); YEL=(255,220,0); PURP=(140,60,255)
+
     while True:
         for ev in pygame.event.get():
             if ev.type==pygame.QUIT: return
-        screen.fill(TRANS)
+        screen.fill(TRANS_C)
+
+        # Тестовый прямоугольник — всегда виден если overlay работает
+        if S['esp']:
+            pygame.draw.rect(screen,RED,(10,10,120,30),3)
+            t=fnt.render("ESP ON",True,YEL)
+            screen.blit(t,(15,15))
+
+        # Entity ESP
         if S['esp'] and ok:
             try:
-                ca=get_angles(); mp,mi=find_my_pos(); mn=ent_name(mi)
-                for _,name,pos in get_bots(mi,mn):
-                    head=(pos[0],pos[1],pos[2]+36)
-                    pr=w2s((head[0]-mp[0],head[1]-mp[1],head[2]-mp[2]),ca,SW,SH)
-                    ft=w2s((pos[0]-mp[0],pos[1]-mp[1],pos[2]-mp[2]),ca,SW,SH)
-                    if not pr or not ft: continue
-                    sx,sy,_=pr; _,fy,_=ft
-                    bh=max(8,abs(fy-sy)); bw=max(5,bh//2)
-                    pygame.draw.rect(screen,RED,(sx-bw//2,sy,bw,bh),2)
-                    pygame.draw.line(screen,PURP,(SW//2,SH),(sx,(sy+fy)//2),1)
-                    t=fnt.render(f"{name[:8]} {int(math.dist(mp,pos))}u",True,YEL)
-                    screen.blit(t,(sx-t.get_width()//2,fy+2))
+                ca=get_angles()
+                mp=ent_pos(1)
+                mn=ent_name(1)
+                for i in range(2,33):
+                    n=ent_name(i)
+                    if not n or n==mn: continue
+                    pos=ent_pos(i)
+                    if all(abs(v)<1 for v in pos): continue
+                    rel=(pos[0]-mp[0],pos[1]-mp[1],pos[2]-mp[2]+36)
+                    pr=w2s(rel,ca,SW,SH)
+                    if not pr: continue
+                    sx,sy,dist=pr
+                    bh=max(10,int(1400/max(dist,1))); bw=max(6,bh//2)
+                    pygame.draw.rect(screen,RED,(sx-bw//2,sy-bh,bw,bh),2)
+                    pygame.draw.line(screen,PURP,(SW//2,SH),(sx,sy),1)
+                    t=fnt.render(f"{n[:8]} {int(dist)}u",True,YEL)
+                    screen.blit(t,(sx,sy+2))
             except: pass
+
         pygame.display.flip(); clk.tick(60)
 
 threading.Thread(target=esp_loop,daemon=True).start()
 
+# ── UI ────────────────────────────────────────────────────
 ctk.set_appearance_mode("dark")
 AC="#c850ff"; BG="#0d0d0d"; C1="#161616"; C2="#1a1a1a"
 root=ctk.CTk()
-root.title("Kereznikov V4"); root.geometry("300x480")
+root.title("Kereznikov V4"); root.geometry("300x580")
 root.resizable(False,False); root.configure(fg_color=BG)
 
 hdr=ctk.CTkFrame(root,fg_color=C1,corner_radius=0,height=50); hdr.pack(fill="x")
@@ -161,17 +173,50 @@ dot_w=ctk.CTkLabel(hdr,text="●",font=("Arial",17),text_color="#fa0"); dot_w.pa
 slbl_w=ctk.CTkLabel(hdr,text="Жду...",font=("Arial",10),text_color="#fa0"); slbl_w.pack(side="right")
 
 df=ctk.CTkFrame(root,fg_color=C1,corner_radius=8); df.pack(fill="x",padx=12,pady=4)
-d1=ctk.CTkLabel(df,text="pos: --",font=("Courier",9),text_color="#555"); d1.pack(anchor="w",padx=8,pady=1)
-d2=ctk.CTkLabel(df,text="aim/bots: --",font=("Courier",9),text_color="#555"); d2.pack(anchor="w",padx=8,pady=(0,5))
+d_scan=ctk.CTkLabel(df,text="epos: не сканировано",font=("Courier",9),text_color="#555"); d_scan.pack(anchor="w",padx=8,pady=1)
+d_pos =ctk.CTkLabel(df,text="pos: --",font=("Courier",9),text_color="#555"); d_pos.pack(anchor="w",padx=8,pady=1)
+d_aim =ctk.CTkLabel(df,text="aim: --",font=("Courier",9),text_color="#555"); d_aim.pack(anchor="w",padx=8,pady=(0,5))
+
+# SCAN кнопка
+def do_scan():
+    if not ok:
+        d_scan.configure(text="Сначала подключись!",text_color="#f44"); return
+    d_scan.configure(text="Сканирую...",text_color="#fc8")
+    def _r():
+        off=auto_scan_epos()
+        if off:
+            d_scan.configure(text=f"НАЙДЕНО epos=0x{off:X}",text_color="#4f8")
+            p=ent_pos(1)
+            d_pos.configure(text=f"pos: x={p[0]:.0f} y={p[1]:.0f} z={p[2]:.0f}",
+                           text_color="#4f8" if -100<p[2]<300 else "#f44")
+        else:
+            d_scan.configure(text="Не найдено — зайди на карту",text_color="#f44")
+    threading.Thread(target=_r,daemon=True).start()
+
+ctk.CTkButton(root,text="SCAN EPOS (зайди на карту сначала)",
+              command=do_scan,fg_color="#0a1a0a",hover_color="#143014",
+              border_color="#4f8",border_width=1,
+              font=("Arial",10,"bold"),height=30,corner_radius=6).pack(fill="x",padx=12,pady=2)
+
+# Тест мыши
+def test_mouse():
+    move_mouse(200,0)
+    time.sleep(0.1)
+    move_mouse(-200,0)
+ctk.CTkButton(root,text="TEST MOUSE (двигает вправо и назад)",
+              command=lambda:threading.Thread(target=test_mouse,daemon=True).start(),
+              fg_color="#1a1a00",hover_color="#2a2a00",
+              border_color="#fc8",border_width=1,
+              font=("Arial",10,"bold"),height=30,corner_radius=6).pack(fill="x",padx=12,pady=2)
 
 def make_btn(lbl,key,col):
-    btn=ctk.CTkButton(root,text=f"o  {lbl}  --  VYKL",
+    btn=ctk.CTkButton(root,text=f"o  {lbl}  -- VYKL",
                       fg_color=C2,hover_color="#222",border_color="#333",border_width=1,
                       font=("Arial",12,"bold"),height=44,corner_radius=8,text_color="#555")
     def click():
         S[key]=not S[key]
-        if S[key]: btn.configure(text=f"*  {lbl}  --  VKL",fg_color="#1e1040",border_color=col,text_color=col)
-        else: btn.configure(text=f"o  {lbl}  --  VYKL",fg_color=C2,border_color="#333",text_color="#555")
+        if S[key]: btn.configure(text=f"* {lbl} -- VKL",fg_color="#1e1040",border_color=col,text_color=col)
+        else: btn.configure(text=f"o  {lbl}  -- VYKL",fg_color=C2,border_color="#333",text_color="#555")
     btn.configure(command=click); btn.pack(fill="x",padx=12,pady=3)
 
 make_btn("AIMBOT","aim",AC)
@@ -198,12 +243,14 @@ def aim_tick():
     try:
         import win32api
         SW=win32api.GetSystemMetrics(0); SH=win32api.GetSystemMetrics(1)
-        ca=get_angles(); mp,mi=find_my_pos(); mn=ent_name(mi)
-        DBG['pos']=f"x={mp[0]:.0f} y={mp[1]:.0f} z={mp[2]:.0f}"
-        bots=get_bots(mi,mn); DBG['bots']=len(bots)
+        ca=get_angles(); mp=ent_pos(1); mn=ent_name(1)
         cx,cy=SW//2,SH//2
         best_dx=best_dy=None; best_d=float('inf')
-        for _,name,pos in bots:
+        for i in range(2,33):
+            n=ent_name(i)
+            if not n or n==mn: continue
+            pos=ent_pos(i)
+            if all(abs(v)<1 for v in pos): continue
             tz=pos[2]+(36 if CFG['head'] else 0)
             rel=(pos[0]-mp[0],pos[1]-mp[1],tz-mp[2])
             pr=w2s(rel,ca,SW,SH)
@@ -212,7 +259,7 @@ def aim_tick():
             d=math.hypot(sx-cx,sy-cy)
             if d<best_d:
                 best_d=d; best_dx=sx-cx; best_dy=sy-cy
-                DBG['aim']=f"{name[:8]} {int(d)}px"
+                DBG['aim']=f"{n[:8]} {int(d)}px"
         if best_dx is not None:
             k=CFG['strength']*0.05
             move_mouse(max(-80,min(80,best_dx*k)),max(-80,min(80,best_dy*k)))
@@ -221,9 +268,10 @@ def aim_tick():
 def tick():
     aim_tick()
     if ok:
-        d1.configure(text=f"pos: {DBG['pos']}",
-                     text_color="#4f8" if DBG['pos']!='--' else "#f44")
-        d2.configure(text=f"aim:{DBG['aim']} bots:{DBG['bots']}")
+        mp=ent_pos(1)
+        d_pos.configure(text=f"pos: x={mp[0]:.0f} y={mp[1]:.0f} z={mp[2]:.0f}",
+                        text_color="#4f8" if -100<mp[2]<300 else "#f44")
+        d_aim.configure(text=f"aim:{DBG['aim']}")
     root.after(16,tick)
 
 tick()
