@@ -10,7 +10,7 @@ ON_GROUND  = 0x122E2D4
 FORCE_JUMP = 0x131434
 
 pm = None; hw = cl = 0; ok = False
-EPOS = 0x184  # сканируется автоматически
+EPOS = 0x17C  # сканируется автоматически
 
 def attach():
     global pm, hw, cl, ok
@@ -39,7 +39,13 @@ def rstr(a):
 def get_angles(): return rv3(hw+VIEWANGLES)
 def ent_b(i):    return hw+ELIST+i*ESIZE
 def ent_name(i): return rstr(ent_b(i)+ENAME)
-def ent_pos(i):  return rv3(ent_b(i)+EPOS)
+def ent_pos(i):
+    # Пробуем 0x17C — если x=0, реальный вектор начинается на +4
+    p = rv3(ent_b(i)+EPOS)
+    if abs(p[0]) < 1 and (abs(p[1]) > 5 or abs(p[2]) > 5):
+        p2 = rv3(ent_b(i)+EPOS+4)  # сдвиг на 4 байта
+        if abs(p2[0]) > 5: return p2
+    return p
 def is_ground():  return ri(hw+ON_GROUND)==1
 
 def auto_scan_epos():
