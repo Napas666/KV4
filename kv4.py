@@ -146,6 +146,10 @@ def esp_loop():
     win32gui.SetLayeredWindowAttributes(hwnd,win32api.RGB(*TRANS),0,win32con.LWA_COLORKEY)
     win32gui.SetWindowPos(hwnd,win32con.HWND_TOPMOST,OX,OY,SW,SH,
         win32con.SWP_NOACTIVATE|win32con.SWP_SHOWWINDOW)
+    # Возвращаем фокус CS чтобы она не свернулась
+    if cs_hwnd:
+        win32gui.SetForegroundWindow(cs_hwnd)
+        win32gui.BringWindowToTop(cs_hwnd)
     fnt=pygame.font.SysFont("Arial",12,bold=True)
     clk=pygame.time.Clock()
     TRANS_C=(255,0,255); RED=(255,60,60); YEL=(255,220,0); PURP=(140,60,255)
@@ -156,6 +160,17 @@ def esp_loop():
         screen.fill(TRANS_C)
 
         # Тестовый прямоугольник — всегда виден если overlay работает
+        # Обновляем позицию оверлея каждые 60 кадров
+        if cs_hwnd and clk.get_time() % 1000 < 20:
+            try:
+                rc2=win32gui.GetWindowRect(cs_hwnd)
+                if (rc2[0],rc2[1],rc2[2]-rc2[0],rc2[3]-rc2[1]) != (OX,OY,SW,SH):
+                    OX,OY=rc2[0],rc2[1]; SW=rc2[2]-rc2[0]; SH=rc2[3]-rc2[1]
+                    screen=pygame.display.set_mode((SW,SH),pygame.NOFRAME)
+                    win32gui.SetWindowPos(hwnd,win32con.HWND_TOPMOST,OX,OY,SW,SH,
+                        win32con.SWP_NOACTIVATE)
+            except: pass
+
         if S['esp']:
             pygame.draw.rect(screen,RED,(10,10,120,30),3)
             t=fnt.render("ESP ON",True,YEL)
